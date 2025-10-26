@@ -315,8 +315,6 @@
     
 #     # Nonaktifkan reloader untuk menghindari error socket di Windows
 #     app.run(debug=True, host='0.0.0.0', port=5001, use_reloader=False)
-
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -329,8 +327,11 @@ import traceback
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# MongoDB Configuration
-MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://rr6093225_db_user:SlhRyLgrH5VzNMvs@cluster0.ihxeqhh.mongodb.net/?appName=Cluster0")
+# MongoDB Configuration - PENTING: Tambahkan nama database di URI!
+MONGODB_URI = os.environ.get(
+    "MONGODB_URI", 
+    "mongodb+srv://rr6093225_db_user:SlhRyLgrH5VzNMvs@cluster0.ihxeqhh.mongodb.net/dropship_db?retryWrites=true&w=majority&appName=Cluster0"
+)
 DATABASE_NAME = "dropship_db"
 COLLECTION_NAME = "orders"
 
@@ -340,27 +341,39 @@ _db = None
 _collection = None
 
 def get_db():
-    """Get database connection with proper error handling"""
+    """Get database connection with proper error handling for serverless"""
     global _client, _db, _collection
     
     if _collection is None:
         try:
+            # Konfigurasi optimized untuk Vercel/serverless
             _client = MongoClient(
                 MONGODB_URI,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=10000,
-                socketTimeoutMS=10000,
-                maxPoolSize=1,
-                retryWrites=True
+                serverSelectionTimeoutMS=3000,  # Lebih pendek untuk serverless
+                connectTimeoutMS=5000,
+                socketTimeoutMS=5000,
+                maxPoolSize=1,  # Penting untuk serverless
+                minPoolSize=0,  # Penting untuk serverless
+                retryWrites=True,
+                w='majority'
             )
-            # Test connection
+            
+            # Test connection dengan timeout
             _client.admin.command('ping')
             _db = _client[DATABASE_NAME]
             _collection = _db[COLLECTION_NAME]
-            print("✅ MongoDB connected")
+            print("✅ MongoDB connected successfully")
+            
+        except ServerSelectionTimeoutError as e:
+            print(f"❌ MongoDB timeout: {str(e)}")
+            raise Exception(f"Database connection timeout: {str(e)}")
+        except ConnectionFailure as e:
+            print(f"❌ MongoDB connection failed: {str(e)}")
+            raise Exception(f"Database connection failed: {str(e)}")
         except Exception as e:
             print(f"❌ MongoDB error: {str(e)}")
-            raise Exception("Database connection failed")
+            traceback.print_exc()
+            raise Exception(f"Database error: {str(e)}")
     
     return _collection
 
