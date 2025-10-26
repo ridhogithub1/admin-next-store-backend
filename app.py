@@ -317,45 +317,52 @@
 #     app.run(debug=True, host='0.0.0.0', port=5001, use_reloader=False)
 
 
-
-
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
+from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from bson import ObjectId
 from datetime import datetime
-import json
 import os
+import traceback
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for React frontend
+CORS(app, resources={r"/*": {"origins": "*"}})
 
 # MongoDB Configuration
 MONGODB_URI = os.environ.get("MONGODB_URI", "mongodb+srv://rr6093225_db_user:SlhRyLgrH5VzNMvs@cluster0.ihxeqhh.mongodb.net/?appName=Cluster0")
 DATABASE_NAME = "dropship_db"
 COLLECTION_NAME = "orders"
 
-# Initialize MongoDB client (lazy connection)
-client = None
-db = None
-orders_collection = None
+# Global variables
+_client = None
+_db = None
+_collection = None
 
 def get_db():
-    """Get database connection (lazy initialization)"""
-    global client, db, orders_collection
+    """Get database connection with proper error handling"""
+    global _client, _db, _collection
     
-    if orders_collection is None:
+    if _collection is None:
         try:
-            client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
-            db = client[DATABASE_NAME]
-            orders_collection = db[COLLECTION_NAME]
+            _client = MongoClient(
+                MONGODB_URI,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                maxPoolSize=1,
+                retryWrites=True
+            )
             # Test connection
-            client.admin.command('ping')
+            _client.admin.command('ping')
+            _db = _client[DATABASE_NAME]
+            _collection = _db[COLLECTION_NAME]
+            print("✅ MongoDB connected")
         except Exception as e:
-            print(f"❌ MongoDB connection failed: {e}")
-            raise
+            print(f"❌ MongoDB error: {str(e)}")
+            raise Exception("Database connection failed")
     
-    return orders_collection
+    return _collection
 
 def serialize_doc(doc):
     """Convert MongoDB document to JSON-serializable format"""
@@ -364,7 +371,6 @@ def serialize_doc(doc):
     
     doc['_id'] = str(doc['_id'])
     
-    # Convert datetime objects to ISO format strings
     if 'createdAt' in doc and isinstance(doc['createdAt'], datetime):
         doc['createdAt'] = doc['createdAt'].isoformat()
     if 'updatedAt' in doc and isinstance(doc['updatedAt'], datetime):
@@ -373,35 +379,34 @@ def serialize_doc(doc):
     return doc
 
 @app.route('/')
+@app.route('/api')
 def home():
     return jsonify({
         "status": "success",
         "message": "Admin Dropship API is running! 🚀",
+        "version": "2.0.0",
         "endpoints": {
-            "GET /api/admin/orders": "Get all orders (with pagination)",
+            "GET /api/admin/orders": "Get all orders",
             "GET /api/admin/orders/<order_id>": "Get order by ID",
-            "PUT /api/admin/orders/<order_id>": "Update order status",
+            "PUT /api/admin/orders/<order_id>": "Update order",
             "DELETE /api/admin/orders/<order_id>": "Delete order",
             "GET /api/admin/stats": "Get statistics",
             "GET /api/admin/recent": "Get recent orders"
         }
-    })
+    }), 200
 
 @app.route('/api/admin/orders', methods=['GET'])
 def get_all_orders():
-    """Get all orders with pagination and filters"""
+    """Get all orders with pagination"""
     try:
         collection = get_db()
         
-        # Get query parameters
-        page = int(request.args.get('page', 1))
-        limit = int(request.args.get('limit', 10))
-        status = request.args.get('status')
-        search = request.args.get('search')
-        sort_by = request.args.get('sortBy', 'createdAt')
-        sort_order = request.args.get('sortOrder', 'desc')
+        # Get parameters
+        page = max(1, int(request.args.get('page', 1)))
+        limit = min(100, max(1, int(request.args.get('limit', 10))))
+        status = request.args.get('status', '')
+        search = request.args.get('search', '').strip()
         
-        # Calculate skip
         skip = (page - 1) * limit
         
         # Build query
@@ -417,27 +422,24 @@ def get_all_orders():
                 {'produk': {'$regex': search, '$options': 'i'}}
             ]
         
-        # Determine sort direction
-        sort_direction = -1 if sort_order == 'desc' else 1
+        # Get count
+        total = collection.count_documents(query)
         
-        # Get orders from MongoDB
+        # Get orders
         orders = list(collection.find(query)
-                     .sort(sort_by, sort_direction)
+                     .sort('createdAt', -1)
                      .skip(skip)
                      .limit(limit))
         
-        # Serialize documents
-        orders = [serialize_doc(order) for order in orders]
+        orders = [serialize_doc(o) for o in orders]
         
-        # Get total count
-        total_count = collection.count_documents(query)
-        total_pages = (total_count + limit - 1) // limit
+        total_pages = max(1, (total + limit - 1) // limit)
         
         return jsonify({
             "status": "success",
             "data": orders,
             "pagination": {
-                "total": total_count,
+                "total": total,
                 "page": page,
                 "limit": limit,
                 "totalPages": total_pages,
@@ -447,7 +449,8 @@ def get_all_orders():
         }), 200
         
     except Exception as e:
-        print(f"❌ Error getting orders: {e}")
+        print(f"❌ Error: {str(e)}")
+        traceback.print_exc()
         return jsonify({
             "status": "error",
             "message": str(e)
@@ -455,7 +458,7 @@ def get_all_orders():
 
 @app.route('/api/admin/orders/<order_id>', methods=['GET'])
 def get_order(order_id):
-    """Get order by order ID"""
+    """Get single order"""
     try:
         collection = get_db()
         order = collection.find_one({"orderId": order_id})
@@ -466,15 +469,13 @@ def get_order(order_id):
                 "message": "Order not found"
             }), 404
         
-        order = serialize_doc(order)
-        
         return jsonify({
             "status": "success",
-            "data": order
+            "data": serialize_doc(order)
         }), 200
         
     except Exception as e:
-        print(f"❌ Error getting order: {e}")
+        print(f"❌ Error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
@@ -486,31 +487,28 @@ def update_order(order_id):
     try:
         collection = get_db()
         data = request.get_json()
-        new_status = data.get('status')
         
-        if not new_status:
+        if not data or 'status' not in data:
             return jsonify({
                 "status": "error",
-                "message": "Status is required"
+                "message": "Status required"
             }), 400
         
-        # Valid statuses
-        valid_statuses = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
-        if new_status not in valid_statuses:
+        new_status = data['status']
+        valid = ['pending', 'processing', 'shipped', 'delivered', 'cancelled']
+        
+        if new_status not in valid:
             return jsonify({
                 "status": "error",
-                "message": f"Invalid status. Must be one of: {', '.join(valid_statuses)}"
+                "message": "Invalid status"
             }), 400
         
-        # Update order
         result = collection.update_one(
             {"orderId": order_id},
-            {
-                "$set": {
-                    "status": new_status,
-                    "updatedAt": datetime.utcnow()
-                }
-            }
+            {"$set": {
+                "status": new_status,
+                "updatedAt": datetime.utcnow()
+            }}
         )
         
         if result.matched_count == 0:
@@ -519,18 +517,16 @@ def update_order(order_id):
                 "message": "Order not found"
             }), 404
         
-        # Get updated order
-        updated_order = collection.find_one({"orderId": order_id})
-        updated_order = serialize_doc(updated_order)
+        order = collection.find_one({"orderId": order_id})
         
         return jsonify({
             "status": "success",
-            "message": "Order status updated",
-            "data": updated_order
+            "message": "Updated",
+            "data": serialize_doc(order)
         }), 200
         
     except Exception as e:
-        print(f"❌ Error updating order: {e}")
+        print(f"❌ Error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
@@ -551,11 +547,11 @@ def delete_order(order_id):
         
         return jsonify({
             "status": "success",
-            "message": "Order deleted successfully"
+            "message": "Deleted"
         }), 200
         
     except Exception as e:
-        print(f"❌ Error deleting order: {e}")
+        print(f"❌ Error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
@@ -563,81 +559,83 @@ def delete_order(order_id):
 
 @app.route('/api/admin/stats', methods=['GET'])
 def get_stats():
-    """Get order statistics"""
+    """Get statistics"""
     try:
         collection = get_db()
         
-        total_orders = collection.count_documents({})
-        pending_orders = collection.count_documents({"status": "pending"})
-        processing_orders = collection.count_documents({"status": "processing"})
-        shipped_orders = collection.count_documents({"status": "shipped"})
-        delivered_orders = collection.count_documents({"status": "delivered"})
-        cancelled_orders = collection.count_documents({"status": "cancelled"})
+        total = collection.count_documents({})
+        pending = collection.count_documents({"status": "pending"})
+        processing = collection.count_documents({"status": "processing"})
+        shipped = collection.count_documents({"status": "shipped"})
+        delivered = collection.count_documents({"status": "delivered"})
+        cancelled = collection.count_documents({"status": "cancelled"})
         
-        # Calculate total revenue
+        # Revenue
         pipeline = [
             {"$match": {"status": {"$in": ["delivered", "processing", "shipped"]}}},
-            {"$group": {
-                "_id": None,
-                "totalRevenue": {"$sum": "$totalHarga"}
-            }}
+            {"$group": {"_id": None, "total": {"$sum": "$totalHarga"}}}
         ]
-        revenue_result = list(collection.aggregate(pipeline))
-        total_revenue = revenue_result[0]['totalRevenue'] if revenue_result else 0
         
-        # Get today's orders
-        today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-        today_orders = collection.count_documents({
-            "createdAt": {"$gte": today_start}
-        })
+        result = list(collection.aggregate(pipeline))
+        revenue = result[0]['total'] if result else 0
+        
+        # Today
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_count = collection.count_documents({"createdAt": {"$gte": today}})
         
         return jsonify({
             "status": "success",
             "data": {
-                "totalOrders": total_orders,
-                "pendingOrders": pending_orders,
-                "processingOrders": processing_orders,
-                "shippedOrders": shipped_orders,
-                "deliveredOrders": delivered_orders,
-                "cancelledOrders": cancelled_orders,
-                "totalRevenue": total_revenue,
-                "todayOrders": today_orders
+                "totalOrders": total,
+                "pendingOrders": pending,
+                "processingOrders": processing,
+                "shippedOrders": shipped,
+                "deliveredOrders": delivered,
+                "cancelledOrders": cancelled,
+                "totalRevenue": revenue,
+                "todayOrders": today_count
             }
         }), 200
         
     except Exception as e:
-        print(f"❌ Error getting stats: {e}")
+        print(f"❌ Error: {str(e)}")
+        traceback.print_exc()
         return jsonify({
             "status": "error",
             "message": str(e)
         }), 500
 
 @app.route('/api/admin/recent', methods=['GET'])
-def get_recent_orders():
+def get_recent():
     """Get recent orders"""
     try:
         collection = get_db()
-        limit = int(request.args.get('limit', 5))
+        limit = min(20, max(1, int(request.args.get('limit', 5))))
         
         orders = list(collection.find()
                      .sort('createdAt', -1)
                      .limit(limit))
         
-        orders = [serialize_doc(order) for order in orders]
-        
         return jsonify({
             "status": "success",
-            "data": orders
+            "data": [serialize_doc(o) for o in orders]
         }), 200
         
     except Exception as e:
-        print(f"❌ Error getting recent orders: {e}")
+        print(f"❌ Error: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)
         }), 500
 
-# For Vercel serverless function
-if __name__ != '__main__':
-    # This is needed for Vercel
-    app = app
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"status": "error", "message": "Not found"}), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"status": "error", "message": "Server error"}), 500
+
+# For local dev
+if __name__ == '__main__':
+    app.run(debug=True, port=5001)
