@@ -315,6 +315,7 @@
     
 #     # Nonaktifkan reloader untuk menghindari error socket di Windows
 #     app.run(debug=True, host='0.0.0.0', port=5001, use_reloader=False)
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from pymongo import MongoClient
@@ -323,14 +324,16 @@ from bson import ObjectId
 from datetime import datetime
 import os
 import traceback
+import certifi
+import ssl
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
-# MongoDB Configuration - PENTING: Tambahkan nama database di URI!
+# MongoDB Configuration
 MONGODB_URI = os.environ.get(
     "MONGODB_URI", 
-    "mongodb+srv://rr6093225_db_user:SlhRyLgrH5VzNMvs@cluster0.ihxeqhh.mongodb.net/dropship_db?retryWrites=true&w=majority&appName=Cluster0"
+    "mongodb+srv://rr6093225_db_user:SlhRyLgrH5VzNMvs@cluster0.ihxeqhh.mongodb.net/dropship_db?retryWrites=true&w=majority"
 )
 DATABASE_NAME = "dropship_db"
 COLLECTION_NAME = "orders"
@@ -341,24 +344,27 @@ _db = None
 _collection = None
 
 def get_db():
-    """Get database connection with proper error handling for serverless"""
+    """Get database connection with proper SSL handling for serverless"""
     global _client, _db, _collection
     
     if _collection is None:
         try:
-            # Konfigurasi optimized untuk Vercel/serverless
+            # Konfigurasi SSL yang lebih robust untuk Vercel
             _client = MongoClient(
                 MONGODB_URI,
-                serverSelectionTimeoutMS=3000,  # Lebih pendek untuk serverless
-                connectTimeoutMS=5000,
-                socketTimeoutMS=5000,
-                maxPoolSize=1,  # Penting untuk serverless
-                minPoolSize=0,  # Penting untuk serverless
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=10000,
+                socketTimeoutMS=10000,
+                maxPoolSize=1,
+                minPoolSize=0,
                 retryWrites=True,
-                w='majority'
+                w='majority',
+                tls=True,
+                tlsAllowInvalidCertificates=False,
+                tlsCAFile=certifi.where()  # Gunakan certifi untuk CA certificates
             )
             
-            # Test connection dengan timeout
+            # Test connection
             _client.admin.command('ping')
             _db = _client[DATABASE_NAME]
             _collection = _db[COLLECTION_NAME]
@@ -366,10 +372,12 @@ def get_db():
             
         except ServerSelectionTimeoutError as e:
             print(f"❌ MongoDB timeout: {str(e)}")
-            raise Exception(f"Database connection timeout: {str(e)}")
+            traceback.print_exc()
+            raise Exception(f"Database connection timeout. Please check MongoDB Atlas settings.")
         except ConnectionFailure as e:
             print(f"❌ MongoDB connection failed: {str(e)}")
-            raise Exception(f"Database connection failed: {str(e)}")
+            traceback.print_exc()
+            raise Exception(f"Database connection failed. Please verify credentials.")
         except Exception as e:
             print(f"❌ MongoDB error: {str(e)}")
             traceback.print_exc()
@@ -394,10 +402,11 @@ def serialize_doc(doc):
 @app.route('/')
 @app.route('/api')
 def home():
+    """Health check endpoint"""
     return jsonify({
         "status": "success",
         "message": "Admin Dropship API is running! 🚀",
-        "version": "2.0.0",
+        "version": "2.0.1",
         "endpoints": {
             "GET /api/admin/orders": "Get all orders",
             "GET /api/admin/orders/<order_id>": "Get order by ID",
@@ -407,6 +416,24 @@ def home():
             "GET /api/admin/recent": "Get recent orders"
         }
     }), 200
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Detailed health check including DB connection"""
+    try:
+        collection = get_db()
+        collection.find_one()
+        return jsonify({
+            "status": "success",
+            "message": "All systems operational",
+            "database": "connected"
+        }), 200
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "message": "Database connection failed",
+            "error": str(e)
+        }), 500
 
 @app.route('/api/admin/orders', methods=['GET'])
 def get_all_orders():
