@@ -645,6 +645,7 @@ import os
 import traceback
 import certifi
 import ssl
+from flask import make_response
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})
@@ -759,6 +760,17 @@ def get_all_products():
                 "hasPrev": page > 1
             }
         }), 200
+        
+        response = jsonify({
+            "status": "success",
+            "data": products,
+            "pagination": {...}
+        })
+        
+        # Tambahkan header CORS secara manual
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS')
         
     except Exception as e:
         print(f"❌ Error: {str(e)}")
