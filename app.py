@@ -974,14 +974,24 @@ def home():
         "message": "Admin Dropship API is running! 🚀",
         "version": "2.0.1",
         "endpoints": {
+            # Orders
             "GET /api/admin/orders": "Get all orders",
             "GET /api/admin/orders/<order_id>": "Get order by ID",
             "PUT /api/admin/orders/<order_id>": "Update order",
             "DELETE /api/admin/orders/<order_id>": "Delete order",
+            # Stats
             "GET /api/admin/stats": "Get statistics",
-            "GET /api/admin/recent": "Get recent orders"
+            "GET /api/admin/recent": "Get recent orders",
+            # Products
+            "GET /api/admin/products": "Get all products",
+            "GET /api/admin/products/<product_id>": "Get product by ID",
+            "POST /api/admin/products": "Create product",
+            "PUT /api/admin/products/<product_id>": "Update product",
+            "DELETE /api/admin/products/<product_id>": "Delete product",
+            "GET /api/admin/products/categories": "Get product categories"
         }
     }), 200
+
 
 @app.route('/api/health', methods=['GET'])
 def health_check():
